@@ -18,11 +18,18 @@ else:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(i_gpu)
     version = sys.argv[6]
     is_half = sys.argv[7].lower() == "true"
+
 import fairseq
+from fairseq.data.dictionary import Dictionary
 import numpy as np
 import soundfile as sf
 import torch
 import torch.nn.functional as F
+
+# --- FIX FOR PYTORCH 2.6+ SECURITY BLOCK ---
+if hasattr(torch.serialization, "add_safe_globals"):
+    torch.serialization.add_safe_globals([Dictionary])
+# -------------------------------------------
 
 if "privateuseone" not in device:
     device = "cpu"

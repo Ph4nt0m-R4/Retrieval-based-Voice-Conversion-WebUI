@@ -148,7 +148,7 @@ class Pipeline(object):
                 )
                 self.model_rmvpe = RMVPE(
                     "%s/rmvpe.pt" % os.environ["rmvpe_root"],
-                    is_half=self.is_half,
+                    is_half=False,
                     device=self.device,
                 )
             f0 = self.model_rmvpe.infer_from_audio(x, thred=0.03)
@@ -215,9 +215,11 @@ class Pipeline(object):
             "output_layer": 9 if version == "v1" else 12,
         }
         t0 = ttime()
+        logger.info("vc step 1: hubert extract_features start")
         with torch.no_grad():
             logits = model.extract_features(**inputs)
             feats = model.final_proj(logits[0]) if version == "v1" else logits[0]
+        logger.info("vc step 2: hubert done")
         if protect < 0.5 and pitch is not None and pitchf is not None:
             feats0 = feats.clone()
         if (
@@ -228,9 +230,6 @@ class Pipeline(object):
             npy = feats[0].cpu().numpy()
             if self.is_half:
                 npy = npy.astype("float32")
-
-            # _, I = index.search(npy, 1)
-            # npy = big_npy[I.squeeze()]
 
             score, ix = index.search(npy, k=8)
             weight = np.square(1 / score)
@@ -265,14 +264,18 @@ class Pipeline(object):
             feats = feats * pitchff + feats0 * (1 - pitchff)
             feats = feats.to(feats0.dtype)
         p_len = torch.tensor([p_len], device=self.device).long()
+        logger.info("vc step 3: net_g.infer start")
         with torch.no_grad():
             hasp = pitch is not None and pitchf is not None
             arg = (feats, p_len, pitch, pitchf, sid) if hasp else (feats, p_len, sid)
             audio1 = (net_g.infer(*arg)[0][0, 0]).data.cpu().float().numpy()
             del hasp, arg
+        logger.info("vc step 4: net_g.infer done")
         del feats, p_len, padding_mask
+        logger.info("vc step 5: calling torch.cuda.empty_cache")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        logger.info("vc step 6: empty_cache done")
         t2 = ttime()
         times[0] += t1 - t0
         times[2] += t2 - t1
@@ -299,6 +302,13 @@ class Pipeline(object):
         protect,
         f0_file=None,
     ):
+        # --- FIX FOR GRADIO DICTIONARY BUG ---
+        try:
+            if type(protect) is dict and "value" in protect:
+                protect = protect["value"]
+        except:
+            pass
+        # -------------------------------------
         if (
             file_index != ""
             # and file_big_npy != ""
@@ -440,18 +450,23 @@ class Pipeline(object):
                 )[self.t_pad_tgt : -self.t_pad_tgt]
             )
         audio_opt = np.concatenate(audio_opt)
+        logger.info("pipeline step P1: concatenate done, calling change_rms=%s" % (rms_mix_rate != 1))
         if rms_mix_rate != 1:
             audio_opt = change_rms(audio, 16000, audio_opt, tgt_sr, rms_mix_rate)
+        logger.info("pipeline step P2: change_rms done, resample=%s" % (tgt_sr != resample_sr >= 16000))
         if tgt_sr != resample_sr >= 16000:
             audio_opt = librosa.resample(
                 audio_opt, orig_sr=tgt_sr, target_sr=resample_sr
             )
+        logger.info("pipeline step P3: resample done")
         audio_max = np.abs(audio_opt).max() / 0.99
         max_int16 = 32768
         if audio_max > 1:
             max_int16 /= audio_max
         audio_opt = (audio_opt * max_int16).astype(np.int16)
         del pitch, pitchf, sid
+        logger.info("pipeline step P4: calling final empty_cache")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        logger.info("pipeline step P5: pipeline done, returning")
         return audio_opt

@@ -100,7 +100,7 @@ class VC:
         person = f'{os.getenv("weight_root")}/{sid}'
         logger.info(f"Loading: {person}")
 
-        self.cpt = torch.load(person, map_location="cpu")
+        self.cpt = torch.load(person, map_location="cpu", weights_only=False)
         self.tgt_sr = self.cpt["config"][-1]
         self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
         self.if_f0 = self.cpt.get("f0", 1)
@@ -160,6 +160,12 @@ class VC:
     ):
         if input_audio_path is None:
             return "You need to upload an audio", None
+        if self.pipeline is None:
+            if sid:
+                logger.info("Pipeline not loaded, auto-loading model: %s" % sid)
+                self.get_vc(sid, 0.5, 0.33)
+            if self.pipeline is None:
+                return "Model not loaded. Please select the voice model from the dropdown first.", None
         f0_up_key = int(f0_up_key)
         try:
             audio = load_audio(input_audio_path, 16000)
@@ -214,15 +220,24 @@ class VC:
                 if os.path.exists(file_index)
                 else "Index not used."
             )
+            out_dir = os.path.join(os.getcwd(), "TEMP")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(
+                out_dir,
+                "vc_%s.wav" % os.path.splitext(os.path.basename(input_audio_path))[0],
+            )
+            sf.write(out_path, audio_opt, tgt_sr)
+            logger.info("Output written to: %s" % out_path)
             return (
                 "Success.\n%s\nTime:\nnpy: %.2fs, f0: %.2fs, infer: %.2fs."
                 % (index_info, *times),
-                (tgt_sr, audio_opt),
+                out_path,
             )
         except:
             info = traceback.format_exc()
             logger.warning(info)
-            return info, (None, None)
+            print("VC_SINGLE EXCEPTION:\n" + info, flush=True)
+            return info, None
 
     def vc_multi(
         self,

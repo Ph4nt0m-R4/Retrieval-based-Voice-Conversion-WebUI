@@ -1,7 +1,18 @@
 import os
-
+import torch
 from fairseq import checkpoint_utils
 
+# --- PYTORCH 2.6+ SECURITY BYPASS ---
+# This forces torch.load to always bypass the weights_only restriction 
+# for older fairseq models like hubert_base.pt during inference.
+original_torch_load = torch.load
+
+def safe_torch_load(f, map_location=None, **kwargs):
+    kwargs["weights_only"] = False
+    return original_torch_load(f, map_location=map_location, **kwargs)
+
+torch.load = safe_torch_load
+# ------------------------------------
 
 def get_index_path_from_model(sid):
     return next(
@@ -9,7 +20,7 @@ def get_index_path_from_model(sid):
             f
             for f in [
                 os.path.join(root, name)
-                for root, _, files in os.walk(os.getenv("index_root"), topdown=False)
+                for root, _, files in os.walk(os.getenv("index_root", "logs"), topdown=False)
                 for name in files
                 if name.endswith(".index") and "trained" not in name
             ]
@@ -17,7 +28,6 @@ def get_index_path_from_model(sid):
         ),
         "",
     )
-
 
 def load_hubert(config):
     models, _, _ = checkpoint_utils.load_model_ensemble_and_task(

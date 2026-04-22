@@ -496,13 +496,17 @@ class RMVPE:
     def __init__(self, model_path: str, is_half, device=None, use_jit=False):
         self.resample_kernel = {}
         self.resample_kernel = {}
-        self.is_half = is_half
+        self.is_half = False
         if device is None:
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.device = device
+        logger.info("RMVPE init step 1: creating MelSpectrogram on %s" % device)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.mel_extractor = MelSpectrogram(
             is_half, 128, 16000, 1024, 160, None, 30, 8000
         ).to(device)
+        logger.info("RMVPE init step 2: MelSpectrogram done")
         if "privateuseone" in str(device):
             import onnxruntime as ort
 
@@ -540,14 +544,16 @@ class RMVPE:
                 return model
 
             def get_default_model():
+                logger.info("RMVPE init step 3: loading weights from disk")
                 model = E2E(4, 1, (2, 2))
-                ckpt = torch.load(model_path, map_location="cpu")
+                ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
                 model.load_state_dict(ckpt)
                 model.eval()
                 if is_half:
                     model = model.half()
                 else:
                     model = model.float()
+                logger.info("RMVPE init step 4: weights loaded, moving to %s" % device)
                 return model
 
             if use_jit:
@@ -563,6 +569,7 @@ class RMVPE:
                 self.model = get_default_model()
 
             self.model = self.model.to(device)
+            logger.info("RMVPE init step 5: model on device, done")
         cents_mapping = 20 * np.arange(360) + 1997.3794084376191
         self.cents_mapping = np.pad(cents_mapping, (4, 4))  # 368
 
@@ -580,8 +587,11 @@ class RMVPE:
                     input_feed={onnx_input_name: mel.cpu().numpy()},
                 )[0]
             else:
-                mel = mel.half() if self.is_half else mel.float()
+                mel = mel.float() 
+                # if self.is_half else mel.float()
+                logger.info("RMVPE mel2hidden: calling model.forward")
                 hidden = self.model(mel)
+                logger.info("RMVPE mel2hidden: model.forward done")
             return hidden[:, :n_frames]
 
     def decode(self, hidden, thred=0.03):
@@ -592,20 +602,16 @@ class RMVPE:
         return f0
 
     def infer_from_audio(self, audio, thred=0.03):
-        # torch.cuda.synchronize()
-        # t0 = ttime()
+        logger.info("RMVPE infer step A: start, audio shape=%s" % str(audio.shape if hasattr(audio, 'shape') else len(audio)))
         if not torch.is_tensor(audio):
             audio = torch.from_numpy(audio)
+        logger.info("RMVPE infer step B: extracting mel")
         mel = self.mel_extractor(
             audio.float().to(self.device).unsqueeze(0), center=True
         )
-        # print(123123123,mel.device.type)
-        # torch.cuda.synchronize()
-        # t1 = ttime()
+        logger.info("RMVPE infer step C: mel done, shape=%s, running mel2hidden" % str(mel.shape))
         hidden = self.mel2hidden(mel)
-        # torch.cuda.synchronize()
-        # t2 = ttime()
-        # print(234234,hidden.device.type)
+        logger.info("RMVPE infer step D: mel2hidden done, decoding")
         if "privateuseone" not in str(self.device):
             hidden = hidden.squeeze(0).cpu().numpy()
         else:
@@ -614,9 +620,7 @@ class RMVPE:
             hidden = hidden.astype("float32")
 
         f0 = self.decode(hidden, thred=thred)
-        # torch.cuda.synchronize()
-        # t3 = ttime()
-        # print("hmvpe:%s\t%s\t%s\t%s"%(t1-t0,t2-t1,t3-t2,t3-t0))
+        logger.info("RMVPE infer step E: done")
         return f0
 
     def to_local_average_cents(self, salience, thred=0.05):
